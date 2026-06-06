@@ -26,7 +26,7 @@ Centroids represent the **mathematical expected average performance** for specif
 
 The data processing script isolates trials by game type and aggregates them by the selected hardware feature, collapsing thousands of individual data points into a single mean coordinate $(\bar{X}, \bar{Y}, \bar{Z})$:
 
-1.  **Full Hardware Profile:** Groups trials sharing the exact combination of system memory and graphics architecture (e.g., `8GB_Apple M1`).
+1.  **Full Hardware Profile:** Groups trials sharing the exact combination of system memory and graphics architecture (e.g., `128GB_Apple`).
 2.  **Pure Browser Engine:** Groups trials strictly by the browser rendering engine (`Safari`, `Chrome`, `Firefox`).
 3.  **Pure Graphics Architecture:** Groups trials strictly by the system's GPU brand (or software based renderer (Google SwiftShader)).
 
