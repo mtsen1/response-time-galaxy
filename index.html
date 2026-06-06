@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Device Profile & Response Time Latency</title>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #0c0c12; overflow: hidden;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+        }
+        #chart-container { width: 100%; height: 100vh; position: relative; }
+        
+        #controls {
+            position: absolute; top: 20px; left: 20px; z-index: 100;
+            background: rgba(18, 18, 28, 0.85); padding: 18px;
+            border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5); backdrop-filter: blur(10px);
+            display: flex; flex-direction: column; gap: 14px;
+        }
+        .control-group { display: flex; flex-direction: column; }
+        label.group-label {
+            color: #8a8a9e; font-size: 11px; text-transform: uppercase;
+            letter-spacing: 1px; margin-bottom: 8px; font-weight: bold;
+        }
+        select {
+            background: #252538; color: #ffffff; border: 1px solid rgba(255,255,255,0.15);
+            padding: 8px 12px; border-radius: 4px; font-size: 14px;
+            outline: none; cursor: pointer; width: 230px; transition: border 0.2s;
+        }
+        select:hover { border-color: #ffba49; }
+
+        .checkbox-container { display: flex; flex-direction: column; gap: 8px; padding-left: 2px; }
+        .checkbox-item {
+            display: flex; align-items: center; gap: 10px; color: #ffffff;
+            font-size: 13px; cursor: pointer; user-select: none;
+        }
+        .checkbox-item input { cursor: pointer; accent-color: #5a5a75; width: 15px; height: 15px; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        
+        .dot-safari { background-color: #20a39e; }
+        .dot-chrome { background-color: #ffba49; }
+        .dot-firefox { background-color: #ef5b5b; }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <div class="control-group">
+            <label class="group-label" for="game-selector">Select Assessment Type</label>
+            <select id="game-selector">
+                <option value="Basic Response Time" selected>Basic Response Time</option>
+                <option value="Boxed">Boxed</option>
+                <option value="Color Blindness Test">Color Blindness Test</option>
+                <option value="Color Swatch">Color Swatch</option>
+                <option value="Color Tricker">Color Tricker</option>
+                <option value="Compass">Compass</option>
+                <option value="Face Switch">Face Switch</option>
+                <option value="Filter">Filter</option>
+                <option value="Flanker">Flanker</option>
+                <option value="Mars UFO">Mars UFO</option>
+                <option value="Sun & Moon">Sun & Moon</option>
+                <option value="Triangle Trace">Triangle Trace</option>
+                <option value="Venus UFO">Venus UFO</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label class="group-label" for="aggregation-selector">Centroid Aggregation Level</label>
+            <select id="aggregation-selector">
+                <option value="hardware" selected>Full Hardware Profile (RAM + GPU)</option>
+                <option value="browser">Pure Browser Engine</option>
+                <option value="gpu">Pure Graphics Architecture</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label class="group-label">Filter Browser Type</label>
+            <div class="checkbox-container">
+                <label class="checkbox-item"><input type="checkbox" value="Safari" checked><span class="dot dot-safari"></span> Safari</label>
+                <label class="checkbox-item"><input type="checkbox" value="Chrome" checked><span class="dot dot-chrome"></span> Chrome</label>
+                <label class="checkbox-item"><input type="checkbox" value="Firefox" checked><span class="dot dot-firefox"></span> Firefox</label>
+            </div>
+        </div>
+
+        <div class="control-group" style="margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px; gap: 10px;">
+            <label class="checkbox-item" style="font-weight: bold; color: #8a8a9e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">
+                <input type="checkbox" id="toggle-stars" checked> Show User Trials
+            </label>
+            <label class="checkbox-item" style="font-weight: bold; color: #8a8a9e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">
+                <input type="checkbox" id="toggle-centroids" checked> Show Centroids
+            </label>
+            <label class="checkbox-item" style="font-weight: bold; color: #8a8a9e; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">
+                <input type="checkbox" id="toggle-lines" checked> Show Links
+            </label>
+        </div>
+    </div>
+
+    <div id="chart-container"></div>
+
+    <script>
+        let allTrials = [];
+        let centroidsPackage = {};
+
+        const browserColors = { 'Safari': '#20a39e', 'Chrome': '#ffba49', 'Firefox': '#ef5b5b' };
+        const trialKeyMap = { 'hardware': 'Profile_Combo', 'browser': 'Browser_Clean', 'gpu': 'GPU_Brand' };
+
+        function randomGaussian(mean=0, stddev=1) {
+            let u = 0, v = 0;
+            while(u === 0) u = Math.random(); 
+            while(v === 0) v = Math.random();
+            return mean + stddev * Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+        }
+
+        // Helper algorithm to compute elegant, human-readable structural tick step sizing dynamically
+        function calculateDynamicStep(minVal, maxVal, allowedSteps) {
+            const rawSpan = maxVal - minVal;
+            const targetRawStep = rawSpan / 5; // Aim for roughly 4 to 6 clean tracking segments
+            
+            // Find the closest predefined milestone step that is equal to or greater than the target step
+            let optimizedStep = allowedSteps[0];
+            for (let i = 0; i < allowedSteps.length; i++) {
+                optimizedStep = allowedSteps[i];
+                if (optimizedStep >= targetRawStep) {
+                    break;
+                }
+            }
+            return optimizedStep;
+        }
+
+        async function init() {
+            const [trialsResponse, centroidsResponse] = await Promise.all([
+                fetch('data/trials.json'), fetch('data/centroids.json')
+            ]);
+            allTrials = await trialsResponse.json();
+            centroidsPackage = await centroidsResponse.json();
+
+            const gamesList = [...new Set(allTrials.map(t => t.GameType))];
+
+            gamesList.forEach(gameName => {
+                const gameTrials = allTrials.filter(t => t.GameType === gameName);
+                if (gameTrials.length === 0) return;
+
+                let gMinX = Infinity, gMaxX = -Infinity;
+                let gMinY = Infinity, gMaxY = -Infinity;
+                let gMinZ = Infinity, gMaxZ = -Infinity;
+
+                for (let i = 0; i < gameTrials.length; i++) {
+                    const t = gameTrials[i];
+                    if (t.FPS_mean < gMinX) gMinX = t.FPS_mean;
+                    if (t.FPS_mean > gMaxX) gMaxX = t.FPS_mean;
+                    if (t.FPS_CV < gMinY) gMinY = t.FPS_CV;
+                    if (t.FPS_CV > gMaxY) gMaxY = t.FPS_CV;
+                    if (t.RT < gMinZ) gMinZ = t.RT;
+                    if (t.RT > gMaxZ) gMaxZ = t.RT;
+                }
+
+                const localSpanX = (gMaxX - gMinX) || 1;
+                const localSpanY = (gMaxY - gMinY) || 1;
+                const localSpanZ = (gMaxZ - gMinZ) || 1;
+
+                const jitterX = localSpanX * 0.011;
+                const jitterY = localSpanY * 0.011;
+                const jitterZ = localSpanZ * 0.011;
+
+                gameTrials.forEach(t => {
+                    t.bakedJitterX = randomGaussian(0, jitterX);
+                    t.bakedJitterY = randomGaussian(0, jitterY);
+                    t.bakedJitterZ = randomGaussian(0, jitterZ);
+                });
+            });
+
+            document.getElementById('game-selector').addEventListener('change', runUpdate);
+            document.getElementById('aggregation-selector').addEventListener('change', runUpdate);
+            document.getElementById('toggle-stars').addEventListener('change', runUpdate);
+            document.getElementById('toggle-centroids').addEventListener('change', runUpdate);
+            document.getElementById('toggle-lines').addEventListener('change', runUpdate);
+            document.querySelectorAll('.checkbox-container input').forEach(cb => cb.addEventListener('change', runUpdate));
+
+            runUpdate();
+        }
+
+        function runUpdate() {
+            const game = document.getElementById('game-selector').value;
+            const agg = document.getElementById('aggregation-selector').value;
+            const showStars = document.getElementById('toggle-stars').checked;
+            const showCentroids = document.getElementById('toggle-centroids').checked;
+            const showLines = document.getElementById('toggle-lines').checked;
+            const checkedBrowsers = Array.from(document.querySelectorAll('.checkbox-container input:checked')).map(cb => cb.value);
+
+            updateGalaxy(game, agg, checkedBrowsers, showStars, showCentroids, showLines);
+        }
+
+        function updateGalaxy(selectedGame, aggLevel, enabledBrowsers, showStars, showCentroids, showLines) {
+            const filteredTrials = allTrials.filter(t => t.GameType === selectedGame && enabledBrowsers.includes(t.Browser_Clean));
+            const filteredCentroids = centroidsPackage[aggLevel].filter(c => c.GameType === selectedGame);
+            
+            if (filteredTrials.length === 0) return;
+
+            const lookupKey = trialKeyMap[aggLevel];
+            const centroidLookup = {};
+            filteredCentroids.forEach(c => { if (c.Hub_Key) centroidLookup[c.Hub_Key] = c; });
+
+            const rawXVals = filteredTrials.map(t => t.FPS_mean);
+            const rawYVals = filteredTrials.map(t => t.FPS_CV);
+            const rawZVals = filteredTrials.map(t => t.RT);
+
+            const bMinX = Math.min(...rawXVals), bMaxX = Math.max(...rawXVals);
+            const bMinY = Math.min(...rawYVals), bMaxY = Math.max(...rawYVals);
+            const bMinZ = Math.min(...rawZVals), bMaxZ = Math.max(...rawZVals);
+
+            const spanX = (bMaxX - bMinX) || 1;
+            const spanY = (bMaxY - bMinY) || 1;
+            const spanZ = (bMaxZ - bMinZ) || 1;
+
+            let processedTrials = filteredTrials.map(t => {
+                const hub = centroidLookup[t[lookupKey]];
+                
+                const dispX = t.FPS_mean + t.bakedJitterX;
+                const dispY = t.FPS_CV + t.bakedJitterY;
+                const dispZ = t.RT + t.bakedJitterZ;
+                
+                let normalizedDistance = 0; 
+                
+                if (hub) {
+                    const dx = (t.FPS_mean - hub.FPS_mean) / spanX;
+                    const dy = (t.FPS_CV - hub.FPS_CV) / spanY;
+                    const dz = (t.RT - hub.RT) / spanZ;
+                    normalizedDistance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                }
+                
+                return { raw: t, dispX, dispY, dispZ, dist: normalizedDistance };
+            });
+
+            const dispXVals = processedTrials.map(pt => pt.dispX);
+            const dispYVals = processedTrials.map(pt => pt.dispY);
+            const dispZVals = processedTrials.map(pt => pt.dispZ);
+
+            const visualMinX = Math.max(0, Math.min(...dispXVals, bMinX)), visualMaxX = Math.max(...dispXVals, bMaxX);
+            const visualMinY = Math.max(0, Math.min(...dispYVals, bMinY)), visualMaxY = Math.max(...dispYVals, bMaxY);
+            const visualMinZ = Math.max(0, Math.min(...dispZVals, bMinZ)), visualMaxZ = Math.max(...dispZVals, bMaxZ);
+
+            let dataTraces = [];
+
+            // ==============================================================================
+            // OVERHAULED: DYNAMIC ADAPTIVE TICK STEP MATRIX GENERATION Engines
+            // ==============================================================================
+            // 1. Performance (X-Axis): Adaptive steps choosing between 5, 10, 25, or 50 FPS
+            const allowedStepsX = [5, 10, 25, 50];
+            const activeStepX = calculateDynamicStep(visualMinX, visualMaxX, allowedStepsX);
+            
+            let xTicks = [], xLabels = [];
+            let tickStartLineX = Math.max(0, Math.floor(visualMinX / activeStepX) * activeStepX);
+            let tickEndLineX = Math.ceil(visualMaxX / activeStepX) * activeStepX;
+            for (let v = tickStartLineX; v <= tickEndLineX; v += activeStepX) {
+                xTicks.push(v); xLabels.push(v.toString());
+            }
+
+            // 2. Instability (Y-Axis): Adaptive steps choosing between 0.1, 0.2, 0.3, 0.5, or 1.0 CV
+            const allowedStepsY = [0.1, 0.2, 0.3, 0.5, 1.0];
+            const activeStepY = calculateDynamicStep(visualMinY, visualMaxY, allowedStepsY);
+
+            let yTicks = [], yLabels = [];
+            let tickStartLineY = Math.max(0, Math.floor(visualMinY / activeStepY) * activeStepY);
+            let tickEndLineY = Math.ceil(visualMaxY / activeStepY) * activeStepY;
+            for (let v = tickStartLineY; v <= tickEndLineY; v += activeStepY) {
+                yTicks.push(v); yLabels.push(v.toFixed(2));
+            }
+
+            // 3. Reaction Time (Z-Axis): Adaptive scales jumping clean from 50ms up to 2000ms
+            const allowedStepsZ = [50, 100, 200, 250, 500, 1000, 2000];
+            const activeStepZ = calculateDynamicStep(visualMinZ, visualMaxZ, allowedStepsZ);
+
+            let zTicks = [], zLabels = [];
+            let tickStartLineZ = Math.max(0, Math.floor(visualMinZ / activeStepZ) * activeStepZ);
+            let tickEndLineZ = Math.ceil(visualMaxZ / activeStepZ) * activeStepZ;
+            for (let v = tickStartLineZ; v <= tickEndLineZ; v += activeStepZ) {
+                zTicks.push(v); zLabels.push(v.toString());
+            }
+
+            const structuralLimitMinX = xTicks[0], structuralLimitMaxX = xTicks[xTicks.length - 1];
+            const structuralLimitMinY = yTicks[0], structuralLimitMaxY = yTicks[yTicks.length - 1];
+            const structuralLimitMinZ = zTicks[0], structuralLimitMaxZ = zTicks[zTicks.length - 1];
+
+            // ==============================================================================
+            // VISUAL AXES SPINES
+            // ==============================================================================
+            dataTraces.push({
+                x: [structuralLimitMinX, structuralLimitMaxX], y: [structuralLimitMinY, structuralLimitMinY], z: [structuralLimitMinZ, structuralLimitMinZ],
+                type: 'scatter3d', mode: 'lines', line: { color: 'rgba(140, 145, 160, 0.35)', width: 2 }, hoverinfo: 'skip', showlegend: false
+            });
+
+            dataTraces.push({
+                x: [structuralLimitMinX, structuralLimitMinX], y: [structuralLimitMinY, structuralLimitMaxY], z: [structuralLimitMinZ, structuralLimitMinZ],
+                type: 'scatter3d', mode: 'lines', line: { color: 'rgba(140, 145, 160, 0.35)', width: 2 }, hoverinfo: 'skip', showlegend: false
+            });
+
+            dataTraces.push({
+                x: [structuralLimitMinX, structuralLimitMinX], y: [structuralLimitMinY, structuralLimitMinY], z: [structuralLimitMinZ, structuralLimitMaxZ],
+                type: 'scatter3d', mode: 'lines', line: { color: 'rgba(140, 145, 160, 0.45)', width: 2 }, hoverinfo: 'skip', showlegend: false
+            });
+
+            // ==============================================================================
+            // DEPLOY INTERVAL TICK NUMBERS
+            // ==============================================================================
+            dataTraces.push({
+                x: xTicks, y: xTicks.map(() => structuralLimitMinY), z: xTicks.map(() => structuralLimitMinZ),
+                type: 'scatter3d', mode: 'text', text: xLabels, textposition: 'bottom center',
+                textfont: { color: 'rgba(140, 145, 160, 0.55)', size: 10 }, hoverinfo: 'skip', showlegend: false
+            });
+
+            dataTraces.push({
+                x: yTicks.map(() => structuralLimitMinX), y: yTicks, z: yTicks.map(() => structuralLimitMinZ),
+                type: 'scatter3d', mode: 'text', text: yLabels, textposition: 'middle left',
+                textfont: { color: 'rgba(140, 145, 160, 0.55)', size: 10 }, hoverinfo: 'skip', showlegend: false
+            });
+
+            dataTraces.push({
+                x: zTicks.map(() => structuralLimitMinX), y: zTicks.map(() => structuralLimitMinY), z: zTicks,
+                type: 'scatter3d', mode: 'text', text: zLabels, textposition: 'middle left',
+                textfont: { color: 'rgba(140, 145, 160, 0.55)', size: 10 }, hoverinfo: 'skip', showlegend: false
+            });
+
+            // ==============================================================================
+            // CONSTELLATION FILAMENTS
+            // ==============================================================================
+            if (showLines) {
+                let linkX = [], linkY = [], linkZ = [];
+                processedTrials.forEach(pt => {
+                    const hub = centroidLookup[pt.raw[lookupKey]];
+                    if (hub && hub.FPS_mean !== null && pt.raw.FPS_mean !== null) {
+                        linkX.push(pt.dispX, hub.FPS_mean, null);
+                        linkY.push(pt.dispY, hub.FPS_CV, null);
+                        linkZ.push(pt.dispZ, hub.RT, null);
+                    }
+                });
+                dataTraces.push({
+                    x: linkX, y: linkY, z: linkZ,
+                    type: 'scatter3d', mode: 'lines',
+                    line: { color: 'rgba(50, 50, 50, 0.1)', width: 0.7 },
+                    hoverinfo: 'none', showlegend: false
+                });
+            }
+
+            // ==============================================================================
+            // MULTI-TIERED GALAXY OPACITY DISPERSION ENGINE
+            // ==============================================================================
+            if (showStars) {
+                const cloudShells = [
+                    { maxDist: 0.12, opacity: 0.60, name: 'Galactic Core' },
+                    { maxDist: 0.35, opacity: 0.25, name: 'Inner Stream' },
+                    { maxDist: Infinity, opacity: 0.28, name: 'Outer Nebula' } 
+                ];
+
+                cloudShells.forEach(shell => {
+                    let shellPoints = processedTrials.filter(pt => {
+                        if (shell.maxDist === 0.12) return pt.dist <= 0.12;
+                        if (shell.maxDist === 0.35) return pt.dist > 0.12 && pt.dist <= 0.35;
+                        return pt.dist > 0.35;
+                    });
+
+                    if (shellPoints.length === 0) return;
+
+                    dataTraces.push({
+                        x: shellPoints.map(pt => pt.dispX),
+                        y: shellPoints.map(pt => pt.dispY),
+                        z: shellPoints.map(pt => pt.dispZ),
+                        type: 'scatter3d', mode: 'markers',
+                        marker: {
+                            size: shellPoints.map(pt => pt.raw.Star_Size),
+                            color: shellPoints.map(pt => browserColors[pt.raw.Browser_Clean]),
+                            opacity: shell.opacity, 
+                            line: { width: 0 }
+                        },
+                        customdata: shellPoints.map(pt => [
+                            pt.raw.pid || "Unknown",
+                            pt.raw.Browser_Clean, 
+                            pt.raw.Profile_Combo, 
+                            pt.raw.FPS_mean, 
+                            pt.raw.FPS_CV, 
+                            pt.raw.RT
+                        ]),
+                        hovertemplate: "<b>Participant:</b> %{customdata[0]}<br><b>Engine:</b> %{customdata[1]} | %{customdata[2]}<br><b>Mean FPS:</b> %{customdata[3]:.1f}<br><b>Jitter (FPS CV):</b> %{customdata[4]:.3f}<br><b>RT:</b> %{customdata[5]:.1f} ms<extra></extra>",
+                        name: shell.name,
+                        showlegend: false
+                    });
+                });
+            }
+
+            // ==============================================================================
+            // SYSTEMIC HARDWARE CENTROIDS
+            // ==============================================================================
+            if (showCentroids) {
+                dataTraces.push({
+                    x: filteredCentroids.map(c => c.FPS_mean),
+                    y: filteredCentroids.map(c => c.FPS_CV),
+                    z: filteredCentroids.map(c => c.RT),
+                    type: 'scatter3d', mode: 'markers',
+                    marker: {
+                        size: 14, symbol: 'circle', color: '#ffffff',
+                        line: { color: '#7000ff', width: 3.5 }
+                    },
+                    text: filteredCentroids.map(c => c.Hub_Key),
+                    customdata: filteredCentroids.map(c => [c.Cluster_Size, c.FPS_mean, c.RT]),
+                    hovertemplate: "<b>Centroid:</b> %{text}<br><b>Avg FPS:</b> %{customdata[1]:.1f}<br><b>Avg RT:</b> %{customdata[2]:.1f} ms<br><b>Mass Size:</b> %{customdata[0]} trials<extra></extra>",
+                    name: 'Active Centroids'
+                });
+            }
+
+            // ==============================================================================
+            // LOCK ANNOTATIONS RIGIDLY ALONG AXES MIDPOINTS
+            // ==============================================================================
+            const midpointX = structuralLimitMinX + (structuralLimitMaxX - structuralLimitMinX) * 0.5;
+            const midpointY = structuralLimitMinY + (structuralLimitMaxY - structuralLimitMinY) * 0.5;
+            const midpointZ = structuralLimitMinZ + (structuralLimitMaxZ - structuralLimitMinZ) * 0.5;
+
+            const sceneAnnotations = [
+                {
+                    x: midpointX, y: structuralLimitMinY, z: structuralLimitMinZ,
+                    text: "Performance (FPS)", textangle: 0, ax: 0, ay: 30,
+                    font: { size: 12, color: 'rgba(140, 145, 160, 0.85)', family: 'Helvetica Neue, Arial' },
+                    bgcolor: 'rgba(0,0,0,0)', bordercolor: 'rgba(0,0,0,0)', showarrow: true, arrowcolor: 'rgba(0,0,0,0)'
+                },
+                {
+                    x: structuralLimitMinX, y: midpointY, z: structuralLimitMinZ,
+                    text: "Instability (CV)", textangle: 0, ax: -45, ay: 15,
+                    font: { size: 12, color: 'rgba(140, 145, 160, 0.85)', family: 'Helvetica Neue, Arial' },
+                    bgcolor: 'rgba(0,0,0,0)', bordercolor: 'rgba(0,0,0,0)', showarrow: true, arrowcolor: 'rgba(0,0,0,0)'
+                },
+                {
+                    x: structuralLimitMinX, y: structuralLimitMinY, z: midpointZ,
+                    text: "Reaction Time (ms)", textangle: 0, ax: -65, ay: 0,
+                    font: { size: 12, color: 'rgba(140, 145, 160, 0.85)', family: 'Helvetica Neue, Arial' },
+                    bgcolor: 'rgba(0,0,0,0)', bordercolor: 'rgba(0,0,0,0)', showarrow: true, arrowcolor: 'rgba(0,0,0,0)'
+                }
+            ];
+
+            // ==============================================================================
+            // SCENE CONFIGURATION
+            // ==============================================================================
+            const layout = {
+                template: 'plotly_dark',
+                paper_bgcolor: '#0c0c12',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                title: {
+                    text: `<b>Device Profile & Response Time Latency: ${selectedGame}</b>`,
+                    font: { size: 16, color: '#ffffff', family: 'Helvetica Neue, Arial, sans-serif' }, y: 0.95, x: 0.25
+                },
+                scene: {
+                    xaxis: { title: { text: '' }, range: [structuralLimitMinX, structuralLimitMaxX], showgrid: false, showline: false, showbackground: false, zeroline: false, showticklabels: false },
+                    yaxis: { title: { text: '' }, range: [structuralLimitMinY, structuralLimitMaxY], showgrid: false, showline: false, showbackground: false, zeroline: false, showticklabels: false },
+                    zaxis: { title: { text: '' }, range: [structuralLimitMinZ, structuralLimitMaxZ], showgrid: false, showline: false, showbackground: false, zeroline: false, showticklabels: false },
+                    annotations: sceneAnnotations, 
+                    camera: {
+                        eye: { x: 1.4, y: 1.4, z: 1.1 }
+                    },
+                    aspectmode: 'auto'
+                }, 
+                margin: { l: 0, r: 0, b: 0, t: 60 },
+                showlegend: false
+            };
+
+            Plotly.newPlot('chart-container', dataTraces, layout, { responsive: true });
+        }
+
+        init();
+    </script>
+</body>
+</html>

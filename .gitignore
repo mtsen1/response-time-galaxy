@@ -1,0 +1,14 @@
+
+data/
+*.csv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.ipynb_checkpoints/
+.vscode/
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+ehthumbs.db
