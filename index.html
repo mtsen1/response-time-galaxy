@@ -132,7 +132,7 @@
 
         async function init() {
             const [trialsResponse, centroidsResponse] = await Promise.all([
-                fetch('data/trials.json'), fetch('data/centroids.json')
+                fetch('trials.json'), fetch('centroids.json')
             ]);
             allTrials = await trialsResponse.json();
             centroidsPackage = await centroidsResponse.json();
