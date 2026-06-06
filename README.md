@@ -2,6 +2,9 @@
 
 An interactive 3D data visualization dashboard that maps cognitive assessment response time performance across different hardware profiles and browser engines. By transforming traditional behavioral metrics into a multi-layered topology, this project reveals how system memory, graphics architectures, and browser environments systematically shape user latency and response stability.
 
+[View the Interactive Plot](https://mtsen1.github.io/response-time-galaxy/)
+
+
 ## Project Architecture & Visual Language
 
 The overall coordinates are mapped across three multi-dimensional axes:
@@ -32,5 +35,4 @@ The data processing script isolates trials by game type and aggregates them by t
 
 Each white centroid tracked on the dashboard also logs a `Cluster_Size` (displayed as **Mass Size** on hover), which records the absolute volume of individual user trials pulled into that specific hardware profile's centroid.
 
----
 
